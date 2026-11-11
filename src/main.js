@@ -212,27 +212,48 @@ function freeDist(t, dir, max) {
   for (let j = 0; j < 12; j++) { const m = (lo + hi) / 2; camTry.copy(t).addScaledVector(dir, m); if (insideRoom(camTry)) lo = m; else hi = m; }
   return lo;
 }
-// the same, but approaching a corner shortens the distance gradually (at most SLOPE metres per radian of orbit) instead of in one cut
-const SLOPE = 3.5, camDir2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
-function softFree(t, dir, max) {
-  let best = freeDist(t, dir, max);
-  for (let k = 1; k <= 14; k++) { const a = k * .05; if (SLOPE * a >= best) break;
-    for (const sgn of [-1, 1]) { camDir2.copy(dir).applyAxisAngle(UP, sgn * a); best = Math.min(best, freeDist(t, camDir2, max) + SLOPE * a); } }
-  return freeDist(t, dir, best);
+// how far the camera can back out from distance h along dir without leaving free space
+function roomAhead(t, dir, h, max) {
+  if (max <= h) return h; const n = 32; let lo = h;
+  for (let i = 1; i <= n; i++) { const d = h + (max - h) * i / n; camTry.copy(t).addScaledVector(dir, d);
+    if (insideRoom(camTry)) { lo = d; continue; }
+    let hi = d; for (let j = 0; j < 10; j++) { const m = (lo + hi) / 2; camTry.copy(t).addScaledVector(dir, m); if (insideRoom(camTry)) lo = m; else hi = m; } return lo; }
+  return max;
 }
-// wantDist: the orbit distance the user chose; haveDist: the distance actually shown (shorter while a wall is in the way, eased back out afterwards)
-let wantDist = 0, haveDist = 0; const lastDir = new THREE.Vector3(); const MIN_FREE = .42;
+// Orbit collision without jumps. wantDist is the distance the user chose, haveDist the one shown, lastDir the direction shown.
+// The shown distance never shrinks faster than IN_SPEED and grows back no faster than OUT_SPEED. Where a turn would need more than that
+// (a corner, the wardrobe, the wall behind the stand) the turn itself is held back while the camera moves in, so nothing ever snaps.
+const IN_SPEED = 2.2, OUT_SPEED = 1.8, MIN_FREE = .42;
+let wantDist = 0, haveDist = 0; const lastDir = new THREE.Vector3(), camDir2 = new THREE.Vector3();
 function preCam() { if (wantDist && !tween) { camDir.subVectors(camera.position, controls.target).normalize(); camera.position.copy(controls.target).addScaledVector(camDir, wantDist); } }
 function clampCam(dt) {
   const t = controls.target; t.x = THREE.MathUtils.clamp(t.x, -.8, 2.0); t.z = THREE.MathUtils.clamp(t.z, .2, 2.6); t.y = THREE.MathUtils.clamp(t.y, .15, 2);
   camDir.subVectors(camera.position, t); const r = camDir.length(); camDir.divideScalar(r || 1);
-  const reach = Math.max(r, wantDist); let free = softFree(t, camDir, reach);
-  // orbiting on towards a wall right behind the target would press the camera onto the object: once it would have to come closer than half the chosen distance, stop turning instead
-  if (!tween && wantDist && free < Math.max(MIN_FREE, Math.min(wantDist * .5, 1)) && lastDir.lengthSq() > 0) { const f2 = softFree(t, lastDir, reach); if (f2 > free) { camDir.copy(lastDir); free = f2; } }
-  lastDir.copy(camDir);
-  if (!wantDist || tween) { wantDist = r; haveDist = Math.min(r, free); }
-  else if (Math.abs(r - wantDist) > 1e-5) { wantDist = haveDist = Math.min(haveDist * r / wantDist, free); }   // zooming acts on what is on screen and stops at the wall
-  else { const goal = Math.min(wantDist, free); haveDist = goal < haveDist ? goal : haveDist + (goal - haveDist) * (1 - Math.exp(-dt * 4)); }
+  if (!wantDist || tween) { wantDist = r; haveDist = freeDist(t, camDir, r); lastDir.copy(camDir); camera.position.copy(t).addScaledVector(camDir, haveDist); return; }
+  const zoom = r / wantDist, zooming = Math.abs(zoom - 1) > 1e-5;
+  // 1. turning: accept as much of the turn as the shown distance can follow at IN_SPEED
+  const step = IN_SPEED * dt, floor = Math.max(MIN_FREE, Math.min(wantDist * .5, 1));
+  const need = Math.max(haveDist - step, Math.min(haveDist, floor));
+  let fit = freeDist(t, camDir, haveDist), held = false;
+  if (fit < need - 1e-6 && lastDir.lengthSq() > 0) {
+    const fit0 = freeDist(t, lastDir, haveDist);
+    if (fit0 >= need - 1e-6) {   // search the part of the turn that still fits
+      let lo = 0, hi = 1; for (let j = 0; j < 7; j++) { const m = (lo + hi) / 2; camDir2.copy(lastDir).lerp(camDir, m).normalize(); if (freeDist(t, camDir2, haveDist) >= need - 1e-6) lo = m; else hi = m; }
+      camDir.copy(lastDir).lerp(camDir, lo).normalize(); held = true;
+      fit = freeDist(t, camDir, haveDist > floor ? haveDist - step : haveDist);   // keep moving in while the user pushes against the obstacle
+      if (fit < need - 1e-6) fit = freeDist(t, camDir, haveDist);
+    }
+  }
+  haveDist = fit; lastDir.copy(camDir);
+  // 2. zooming acts on what is on screen and stops at the wall; otherwise ease back out towards the chosen distance when there is room
+  if (zooming) {
+    const z = haveDist * zoom;
+    if (zoom > 1) haveDist = roomAhead(t, camDir, haveDist, z); else { const f = freeDist(t, camDir, z); if (f > z - .06) haveDist = f; }
+    wantDist = haveDist;
+  } else if (!held && wantDist > haveDist) {
+    const goal = roomAhead(t, camDir, haveDist, wantDist);
+    haveDist += Math.min((goal - haveDist) * (1 - Math.exp(-dt * 3.5)), OUT_SPEED * dt);
+  }
   camera.position.copy(t).addScaledVector(camDir, haveDist);
 }
 
