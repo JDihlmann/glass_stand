@@ -191,21 +191,49 @@ const VIEWS = {
 let tween = null;
 function goView(name, instant) {
   const [p, t] = VIEWS[name]; const P = new THREE.Vector3(...p), T = new THREE.Vector3(...t); T.y *= S.H / .9;
+  wantDist = 0;
   if (instant) { camera.position.copy(P); controls.target.copy(T); return; }
   tween = { p0: camera.position.clone(), t0: controls.target.clone(), P, T, k: 0 };
 }
-const insideRoom = (p) => {
-  if (p.y < .12 || p.y > ROOM.h - .12) return false;
-  const hall = p.x > ROOM.x0 + .46 && p.x < ROOM.x1 - .18 && p.z > .18 && p.z < ROOM.z1 - .18 && !(p.x > .74 && p.z < .82);   // not inside bench / PAX
-  const passage = p.x > ROOM.x0 + .22 && p.x < -.22 && p.z > ROOM.z0 + .22 && p.z <= .3;
-  return hall || passage;
-};
-const camTry = new THREE.Vector3();
-function clampCam() {
+// where the camera may stand: the hall and the passage, minus a margin to the walls, the bench and the wardrobe
+const inHall = (p) => p.x > ROOM.x0 + .46 && p.x < ROOM.x1 - .18 && p.z > .18 && p.z < ROOM.z1 - .18;
+const inPassage = (p) => p.x > ROOM.x0 + .22 && p.x < -.22 && p.z > ROOM.z0 + .22 && p.z <= .3;
+const inY = (p) => p.y >= .12 && p.y <= ROOM.h - .12;
+const insideRoom = (p) => inY(p) && ((inHall(p) && !(p.x > .74 && p.z < .82 && (p.y < .9 || p.x > 1.7))) || inPassage(p));
+// what the camera may look across: the same space including the low bench (the target itself may sit inside it), but not the wardrobe or any wall
+const seeThrough = (p) => inY(p) && ((inHall(p) && !(p.x > 1.7 && p.z < .82)) || inPassage(p));
+const camTry = new THREE.Vector3(), camDir = new THREE.Vector3();
+// the farthest spot along dir, up to max, where the camera can stand with a clear line back to the target (continuous, so orbiting along a wall glides)
+function freeDist(t, dir, max) {
+  const n = 48; let last = -1;
+  for (let i = 0; i <= n; i++) { camTry.copy(t).addScaledVector(dir, max * i / n); if (!seeThrough(camTry)) break; if (insideRoom(camTry)) last = i; }
+  if (last < 0) return 0; if (last === n) return max;
+  let lo = max * last / n, hi = max * (last + 1) / n;
+  for (let j = 0; j < 12; j++) { const m = (lo + hi) / 2; camTry.copy(t).addScaledVector(dir, m); if (insideRoom(camTry)) lo = m; else hi = m; }
+  return lo;
+}
+// the same, but approaching a corner shortens the distance gradually (at most SLOPE metres per radian of orbit) instead of in one cut
+const SLOPE = 3.5, camDir2 = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+function softFree(t, dir, max) {
+  let best = freeDist(t, dir, max);
+  for (let k = 1; k <= 14; k++) { const a = k * .05; if (SLOPE * a >= best) break;
+    for (const sgn of [-1, 1]) { camDir2.copy(dir).applyAxisAngle(UP, sgn * a); best = Math.min(best, freeDist(t, camDir2, max) + SLOPE * a); } }
+  return freeDist(t, dir, best);
+}
+// wantDist: the orbit distance the user chose; haveDist: the distance actually shown (shorter while a wall is in the way, eased back out afterwards)
+let wantDist = 0, haveDist = 0; const lastDir = new THREE.Vector3(); const MIN_FREE = .42;
+function preCam() { if (wantDist && !tween) { camDir.subVectors(camera.position, controls.target).normalize(); camera.position.copy(controls.target).addScaledVector(camDir, wantDist); } }
+function clampCam(dt) {
   const t = controls.target; t.x = THREE.MathUtils.clamp(t.x, -.8, 2.0); t.z = THREE.MathUtils.clamp(t.z, .2, 2.6); t.y = THREE.MathUtils.clamp(t.y, .15, 2);
-  if (insideRoom(camera.position)) return;
-  // walk back from the camera towards what it is looking at until the spot is free
-  for (let k = .98; k > 0; k -= .02) { camTry.lerpVectors(t, camera.position, k); if (insideRoom(camTry)) { camera.position.copy(camTry); return; } }
+  camDir.subVectors(camera.position, t); const r = camDir.length(); camDir.divideScalar(r || 1);
+  const reach = Math.max(r, wantDist); let free = softFree(t, camDir, reach);
+  // orbiting on towards a wall right behind the target would press the camera onto the object: once it would have to come closer than half the chosen distance, stop turning instead
+  if (!tween && wantDist && free < Math.max(MIN_FREE, Math.min(wantDist * .5, 1)) && lastDir.lengthSq() > 0) { const f2 = softFree(t, lastDir, reach); if (f2 > free) { camDir.copy(lastDir); free = f2; } }
+  lastDir.copy(camDir);
+  if (!wantDist || tween) { wantDist = r; haveDist = Math.min(r, free); }
+  else if (Math.abs(r - wantDist) > 1e-5) { wantDist = haveDist = Math.min(haveDist * r / wantDist, free); }   // zooming acts on what is on screen and stops at the wall
+  else { const goal = Math.min(wantDist, free); haveDist = goal < haveDist ? goal : haveDist + (goal - haveDist) * (1 - Math.exp(-dt * 4)); }
+  camera.position.copy(t).addScaledVector(camDir, haveDist);
 }
 
 // ---- frame ----------------------------------------------------------------
@@ -249,7 +277,7 @@ function frame() {
     camera.position.lerpVectors(tween.p0, tween.P, e); controls.target.lerpVectors(tween.t0, tween.T, e); if (tween.k >= 1) tween = null;
   }
   controls.autoRotate = S.spin && !tween; controls.autoRotateSpeed = .55;
-  controls.update(); clampCam(); camera.lookAt(controls.target); camera.updateMatrixWorld();
+  preCam(); controls.update(); clampCam(dt); camera.lookAt(controls.target); camera.updateMatrixWorld();
   render();
   if (framesDrawn < 1e6 && ++framesDrawn) {
     if (framesDrawn === 2) { document.body.classList.add('first'); document.getElementById('loader-text').textContent = 'Placing the flowers…'; }
@@ -261,5 +289,5 @@ canvas.addEventListener('pointerdown', () => { tween = null; });
 
 buildUI(S, { apply, goView, flowers: Object.fromEntries(Object.entries(ARRANGEMENTS).map(([k, v]) => [k, v.label])), reseed() { stand.state.seed = Math.floor(Math.random() * 1e4); apply(true); } });
 resize(); apply(true); goView('hero', true);
-window.__app = { S, apply, goView, camera, controls, renderer, stand, scene };
+window.__app = { S, apply, goView, camera, controls, renderer, stand, scene, preCam, clampCam, insideRoom };
 requestAnimationFrame(frame);
