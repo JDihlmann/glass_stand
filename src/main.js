@@ -14,6 +14,9 @@ import { buildUI } from './ui.js';
 import { unwrap, applyLightmap, exportForBake, setBaked } from './bake.js';
 
 const canvas = document.getElementById('c');
+// loading state: textures still on their way, and how many frames have been drawn
+let texturesReady = false, framesDrawn = 0; const tStart = performance.now();
+THREE.DefaultLoadingManager.onLoad = () => { texturesReady = true; };
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
@@ -180,7 +183,7 @@ const VIEWS = {
   front: [[.5, .8, 2.3], [.5, .5, .26]],
   close: [[1.1, 1.0, 1.2], [.5, .6, .26]],
   top: [[.85, 1.72, .95], [.5, .86, .26]],
-  hall: [[-1.0, 1.55, .5], [.9, .9, .2]],
+  hall: [[-.85, 1.55, .5], [.9, .9, .2]],
   wide: [[2.05, 1.55, 2.8], [.1, .95, .3]],
   bed: [[2.1, 1.5, 1.38], [-1.3, 1.1, 1.05]],
   passage: [[-.65, 1.5, -1.95], [-.35, 1.1, 2.9]],
@@ -191,9 +194,18 @@ function goView(name, instant) {
   if (instant) { camera.position.copy(P); controls.target.copy(T); return; }
   tween = { p0: camera.position.clone(), t0: controls.target.clone(), P, T, k: 0 };
 }
+const insideRoom = (p) => {
+  if (p.y < .12 || p.y > ROOM.h - .12) return false;
+  const hall = p.x > ROOM.x0 + .46 && p.x < ROOM.x1 - .18 && p.z > .18 && p.z < ROOM.z1 - .18 && !(p.x > .74 && p.z < .82);   // not inside bench / PAX
+  const passage = p.x > ROOM.x0 + .22 && p.x < -.22 && p.z > ROOM.z0 + .22 && p.z <= .3;
+  return hall || passage;
+};
+const camTry = new THREE.Vector3();
 function clampCam() {
-  const p = camera.position; p.x = THREE.MathUtils.clamp(p.x, ROOM.x0 + .14, ROOM.x1 - .14); p.z = THREE.MathUtils.clamp(p.z, p.x < -.18 ? ROOM.z0 + .16 : .16, ROOM.z1 - .14); p.y = THREE.MathUtils.clamp(p.y, .12, ROOM.h - .12);
-  const t = controls.target; t.x = THREE.MathUtils.clamp(t.x, -1.1, 3.9); t.z = THREE.MathUtils.clamp(t.z, -1.2, 3.2); t.y = THREE.MathUtils.clamp(t.y, .05, 2);
+  const t = controls.target; t.x = THREE.MathUtils.clamp(t.x, -.8, 2.0); t.z = THREE.MathUtils.clamp(t.z, .2, 2.6); t.y = THREE.MathUtils.clamp(t.y, .15, 2);
+  if (insideRoom(camera.position)) return;
+  // walk back from the camera towards what it is looking at until the spot is free
+  for (let k = .98; k > 0; k -= .02) { camTry.lerpVectors(t, camera.position, k); if (insideRoom(camTry)) { camera.position.copy(camTry); return; } }
 }
 
 // ---- frame ----------------------------------------------------------------
@@ -238,7 +250,12 @@ function frame() {
   }
   controls.autoRotate = S.spin && !tween; controls.autoRotateSpeed = .55;
   controls.update(); clampCam(); camera.lookAt(controls.target); camera.updateMatrixWorld();
-  render(); requestAnimationFrame(frame);
+  render();
+  if (framesDrawn < 1e6 && ++framesDrawn) {
+    if (framesDrawn === 2) { document.body.classList.add('first'); document.getElementById('loader-text').textContent = 'Placing the flowers…'; }
+    if (framesDrawn > 8 && (texturesReady || performance.now() - tStart > 9000)) { document.body.classList.add('ready'); framesDrawn = 1e6; }
+  }
+  requestAnimationFrame(frame);
 }
 canvas.addEventListener('pointerdown', () => { tween = null; });
 
