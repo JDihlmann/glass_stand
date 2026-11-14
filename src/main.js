@@ -11,6 +11,7 @@ import { Stand, L } from './stand.js';
 import { makeCopier } from './glass.js';
 import { ARRANGEMENTS } from './flowers.js';
 import { buildUI } from './ui.js';
+import { buildHomeView } from './homeview.js';
 import { unwrap, applyLightmap, exportForBake, setBaked } from './bake.js';
 
 const canvas = document.getElementById('c');
@@ -32,6 +33,7 @@ const SPOS = new THREE.Vector3(.5, 0, .262);
 const stand = new Stand(scene); stand.group.position.copy(SPOS);
 const standShadow = blob(scene, SPOS.x, SPOS.z, .62, .62, .5);
 const bowl = buildBowl(); scene.add(bowl);
+const homeview = buildHomeView(); scene.add(homeview);
 const stool = buildStool(); stool.position.set(.64, 0, .27); stool.visible = false; scene.add(stool);
 
 // the wall mirror also shows what is inside the stand (flowers, lamp, green edges), without the glass optics
@@ -135,7 +137,7 @@ function resize() {
 addEventListener('resize', resize);
 
 // ---- state ----------------------------------------------------------------
-const S = { object: 'stand', flowers: 'violet', glass: 'edelit', strength: 1, mirror: true, lamp: 'off', lampI: .7, warmth: .7, time: 'day', H: .9, W: .4, bowl: true, spin: false };
+const S = { object: 'stand', flowers: 'violet', glass: 'edelit', strength: 1, mirror: true, lamp: 'off', lampI: .7, warmth: .7, time: 'day', H: .9, W: .4, top: 'both', hvColor: 'silver', spin: false };
 let envDirty = true;
 const kelvin = (t) => new THREE.Color().setRGB(1, THREE.MathUtils.lerp(.93, .62, t), THREE.MathUtils.lerp(.86, .28, t));
 
@@ -146,9 +148,16 @@ function apply(rebuild = false) {
   stand.group.visible = isStand; standShadow.visible = isStand; stool.visible = !isStand;
   standShadow.scale.setScalar(S.W / .4);
   stand.mirror.visible = S.mirror;
-  bowl.visible = S.bowl; bowl.position.set(isStand ? SPOS.x : stool.position.x, isStand ? S.H : .437, isStand ? SPOS.z : stool.position.z);
-  const axis = S.glass === 'flutes' ? [1, 0] : [1, 1], k = S.glass === 'clear' ? 0 : S.strength;
-  for (const m of [stand.matFar, stand.matNear]) { m.uniforms.uAxis.value.set(...axis); m.uniforms.uStrength.value = k; m.uniforms.uSparkle.value = k > 0 ? 1 : 0; }
+  // what sits on top: the key bowl, the HomeView, or both side by side (the stool only has room for one)
+  const tx = isStand ? SPOS.x : stool.position.x, ty = isStand ? S.H : .437, tz = isStand ? SPOS.z : stool.position.z, k = S.W / .4;
+  const both = S.top === 'both' && isStand;
+  bowl.visible = S.top === 'bowl' || S.top === 'both';
+  homeview.visible = S.top === 'homeview' || both;
+  bowl.position.set(tx + (both ? -.055 * k : 0), ty, tz + (both ? .06 * k : 0));
+  homeview.position.set(tx + (both ? .112 * k : 0), ty, tz + (both ? -.115 * k : -.02)); homeview.rotation.y = both ? -.22 : 0;
+  homeview.userData.setColor(S.hvColor);
+  const axis = S.glass === 'flutes' ? [1, 0] : [1, 1], kk = S.glass === 'clear' ? 0 : S.strength;
+  for (const m of [stand.matFar, stand.matNear]) { m.uniforms.uAxis.value.set(...axis); m.uniforms.uStrength.value = kk; m.uniforms.uSparkle.value = kk > 0 ? 1 : 0; }
   // lighting
   const day = S.time === 'day';
   room.dayMat.color.setRGB(...(day ? [1.7, 1.95, 2.3] : [.02, .025, .04])); room.shadeMat.color.setRGB(...(day ? [1.6, .4, .07] : [3.2, .8, .14]));
@@ -165,14 +174,14 @@ function apply(rebuild = false) {
 }
 
 function captureEnv() {
-  const vis = [bowl.visible, stool.visible]; bowl.visible = stool.visible = false;
+  const vis = [bowl.visible, stool.visible, homeview.visible]; bowl.visible = stool.visible = homeview.visible = false;
   cubeCam.position.set(SPOS.x, .6, SPOS.z + .1);
   for (let i = 0; i < 2; i++) {
     cubeCam.update(renderer, scene);
     const next = pmrem.fromCubemap(cubeRT.texture); if (envRT) envRT.dispose(); envRT = next; scene.environment = envRT.texture;
   }
   scene.environmentIntensity = .7;
-  [bowl.visible, stool.visible] = vis; envDirty = false;
+  [bowl.visible, stool.visible, homeview.visible] = vis; envDirty = false;
 }
 
 // ---- camera ---------------------------------------------------------------

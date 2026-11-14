@@ -53,7 +53,11 @@ export function buildUI(S, api) {
   for (const [k, label] of Object.entries({ hero: 'Niche', front: 'Front', close: 'Close', top: 'Bowl', hall: 'Entrance', wide: 'Whole hall', bed: 'Office door', passage: 'Passage' })) { const b = el('button', '', label); b.type = 'button'; b.onclick = () => api.goView(k); vr.append(b); }
   sections.view.append(vr); seg(sections.view, 'spin', { false: 'Still', true: 'Slow orbit' });
 
-  seg(sections.object, 'object', { stand: 'Glass stand', stool: 'Current stool' }, false, refresh); seg(sections.object, 'bowl', { true: 'Key bowl', false: 'No bowl' });
+  seg(sections.object, 'object', { stand: 'Glass stand', stool: 'Current stool' }, false, refresh); 
+  // what stands on top; the colour row only shows while the HomeView does
+  const hvRow = () => { hv.hidden = !(S.top === 'homeview' || S.top === 'both'); };
+  sections.object.append(el('h3', '', 'On top')); seg(sections.object, 'top', { both: 'Both', bowl: 'Key bowl', homeview: 'HomeView', none: 'Nothing' }, false, hvRow).classList.add('wrap');
+  const hv = seg(sections.object, 'hvColor', { silver: 'Silver', starlight: 'Starlight', pink: 'Pink', gray: 'Grey' }); hvRow();
 
   seg(sections.flowers, 'flowers', { ...api.flowers, none: 'Empty' }, true).classList.add('wrap');
   const again = el('button', 'ghost', 'Rearrange'); again.type = 'button'; again.onclick = () => api.reseed(); sections.flowers.append(again);
